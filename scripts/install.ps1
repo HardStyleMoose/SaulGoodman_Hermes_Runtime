@@ -145,6 +145,18 @@ function Install-Uv {
     }
 }
 
+# Refresh $env:Path from the User + Machine registry hives.  Stage drivers
+# invoke each stage in a fresh powershell process, but those processes
+# inherit env from the parent driver shell, NOT from the registry.  When
+# an earlier stage (Stage-Git, Stage-Node, ...) installs a binary and
+# pushes its directory into User PATH, the next child process's $env:Path
+# is stale and the binary appears missing.  This helper re-reads PATH
+# from the registry so every Invoke-Stage starts from a fresh, up-to-date
+# PATH view.  Cheap (registry reads, no I/O elsewhere) and idempotent.
+function Sync-EnvPath {
+    $env:Path = [Environment]::GetEnvironmentVariable("Path", "User") + ";" + [Environment]::GetEnvironmentVariable("Path", "Machine")
+}
+
 # Re-discover uv without re-installing it.  Cross-process stage drivers
 # (the desktop GUI's onboarding wizard, CI step-runners) invoke each stage
 # in a fresh powershell process, so $script:UvCmd set by Install-Uv in a
@@ -1788,6 +1800,12 @@ function Invoke-Stage {
     param(
         [Parameter(Mandatory=$true)] [hashtable]$StageDef
     )
+
+    # Refresh PATH from registry so this stage sees binaries installed by
+    # prior stages, even when each stage runs in its own powershell process.
+    # No-op in cost-relevant cases (default invocation path syncs once per
+    # foreach pass; cross-process drivers get the necessary freshening).
+    Sync-EnvPath
 
     $start = [DateTime]::UtcNow
     $result = @{

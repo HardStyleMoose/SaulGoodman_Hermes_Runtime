@@ -33,6 +33,15 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# Suppress Invoke-WebRequest's per-chunk progress bar.  Windows PowerShell
+# 5.1's progress UI repaints synchronously on every received byte, which
+# pegs CPU on a single core and throttles downloads by 10-100x (a 57MB
+# PortableGit grab can take 5 minutes with progress on vs 20 seconds
+# with progress off, on the same network).  Every IWR call in this
+# script is fire-and-forget so we never need to see the bar.  Restored
+# automatically when the script exits.
+$ProgressPreference = "SilentlyContinue"
+
 # Force the console to UTF-8 so non-ASCII output from native commands
 # (e.g. playwright's box-drawing progress bars and download banners,
 # git's bullet glyphs, npm's check marks) renders correctly instead of

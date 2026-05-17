@@ -1314,10 +1314,19 @@ function Install-NodeDeps {
     function _Run-NpmInstall([string]$label, [string]$installDir, [string]$logPath, [string]$npmPath) {
         Push-Location $installDir
         try {
-            # Redirect ALL output streams to the log file via 2>&1 and then
-            # ``Tee-Object`` / ``Out-File``.  Simpler approach: call npm
-            # with output redirected and inspect $LASTEXITCODE afterwards.
-            & $npmPath install --silent *> $logPath
+            # Stream npm's output to BOTH the console and the log file via
+            # Tee-Object.  Previously this called ``& npm install --silent
+            # *> $logPath`` which redirected every stream to disk and left
+            # the user staring at a frozen "Installing..." line for the
+            # duration of the install.  On a fresh VM that's 1-3 minutes
+            # of total silence, indistinguishable from a hang.
+            #
+            # Tee writes the live output to stdout AND $logPath; we still
+            # capture the exit code afterwards and surface diagnostics
+            # on failure.  Note: 2>&1 merges npm's stderr into the success
+            # stream first because Tee-Object only sees the success
+            # stream of the pipeline.
+            & $npmPath install --silent 2>&1 | Tee-Object -FilePath $logPath
             $code = $LASTEXITCODE
             if ($code -eq 0) {
                 Write-Success "$label dependencies installed"
@@ -1379,7 +1388,15 @@ function Install-NodeDeps {
                 $pwLog = "$env:TEMP\hermes-playwright-install-$(Get-Random).log"
                 Push-Location $InstallDir
                 try {
-                    & $npxExe playwright install chromium *> $pwLog
+                    # Playwright Chromium is ~170MB compressed and the
+                    # download regularly takes 3-10 minutes on a fresh
+                    # VM.  Tee the output to console + log so the user
+                    # sees download progress in real time instead of
+                    # staring at a silent prompt that looks hung.  See
+                    # _Run-NpmInstall above for the same pattern and
+                    # the rationale behind 2>&1 before the pipe.
+                    Write-Info "(this can take several minutes -- streaming progress below)"
+                    & $npxExe playwright install chromium 2>&1 | Tee-Object -FilePath $pwLog
                     $pwCode = $LASTEXITCODE
                     if ($pwCode -eq 0) {
                         Write-Success "Playwright Chromium installed (browser tools ready)"

@@ -1396,7 +1396,14 @@ function Install-NodeDeps {
                     # _Run-NpmInstall above for the same pattern and
                     # the rationale behind 2>&1 before the pipe.
                     Write-Info "(this can take several minutes -- streaming progress below)"
-                    & $npxExe playwright install chromium 2>&1 | Tee-Object -FilePath $pwLog
+                    # --yes auto-accepts npx's "Need to install playwright@X.Y.Z"
+                    # confirmation prompt.  Without it, npx 7+ blocks on stdin
+                    # waiting for a y/N answer that never comes when this is
+                    # invoked through a pipeline (Tee-Object disconnects stdin
+                    # from the user's TTY), and the install hangs indefinitely
+                    # after printing "Need to install the following packages:
+                    # playwright@X.Y.Z".
+                    & $npxExe --yes playwright install chromium 2>&1 | Tee-Object -FilePath $pwLog
                     $pwCode = $LASTEXITCODE
                     if ($pwCode -eq 0) {
                         Write-Success "Playwright Chromium installed (browser tools ready)"

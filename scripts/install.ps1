@@ -33,6 +33,24 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# Force the console to UTF-8 so non-ASCII output from native commands
+# (e.g. playwright's box-drawing progress bars and download banners,
+# git's bullet glyphs, npm's check marks) renders correctly instead of
+# as IBM437/Windows-1252 mojibake (sequences like 0xE2 0x95 0x94 box-
+# drawing chars decoded under the legacy DOS codepage).  This is a
+# DISPLAY-only fix; the underlying bytes are already correct.  We do
+# NOT change the file's own encoding (it remains pure ASCII for PS 5.1
+# parser compatibility; see comments at the top of the entry-point
+# dispatch).  This affects only what the user sees in their terminal
+# during this install run, and reverts automatically when the script
+# exits and the host's console encoding is restored.
+try {
+    [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
+} catch {
+    # Some constrained PowerShell hosts disallow encoding mutation.
+    # Mojibake on output is then cosmetic-only, install still works.
+}
+
 # ============================================================================
 # Configuration
 # ============================================================================
@@ -1352,7 +1370,10 @@ function Install-NodeDeps {
             # capture the exit code afterwards and surface diagnostics
             # on failure.  Note: 2>&1 merges npm's stderr into the success
             # stream first because Tee-Object only sees the success
-            # stream of the pipeline.
+            # stream of the pipeline.  ForEach-Object { "$_" } coerces
+            # each item to a string so PowerShell's NativeCommandError
+            # formatter doesn't wrap stderr lines as alarming red blocks
+            # (cosmetic polish; the underlying text is unchanged).
             #
             # Relax EAP around the npm invocation: with EAP=Stop (set at
             # the top of this script), PowerShell wraps stderr lines from
@@ -1363,7 +1384,7 @@ function Install-NodeDeps {
             # $LASTEXITCODE, which is reliable regardless of stderr noise.
             $prevEAP = $ErrorActionPreference
             $ErrorActionPreference = "Continue"
-            & $npmPath install --silent 2>&1 | Tee-Object -FilePath $logPath
+            & $npmPath install --silent 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $logPath
             $code = $LASTEXITCODE
             $ErrorActionPreference = $prevEAP
             if ($code -eq 0) {
@@ -1451,9 +1472,17 @@ function Install-NodeDeps {
                     # with a mangled banner as the error message even though
                     # the install actually succeeded.  Check $LASTEXITCODE
                     # instead, which is the reliable signal.
+                    #
+                    # The ForEach-Object { "$_" } coercion BEFORE Tee-Object
+                    # is a cosmetic polish: with bare 2>&1, PowerShell still
+                    # renders stderr lines through its NativeCommandError
+                    # formatter (the red "npx.cmd : ..." block).  Coercing
+                    # each pipeline item to a string strips that wrapper so
+                    # the user sees clean playwright output instead of the
+                    # alarming-looking error formatting.
                     $prevEAP = $ErrorActionPreference
                     $ErrorActionPreference = "Continue"
-                    & $npxExe --yes playwright install chromium 2>&1 | Tee-Object -FilePath $pwLog
+                    & $npxExe --yes playwright install chromium 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $pwLog
                     $pwCode = $LASTEXITCODE
                     $ErrorActionPreference = $prevEAP
                     if ($pwCode -eq 0) {

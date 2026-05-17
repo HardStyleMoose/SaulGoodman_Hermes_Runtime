@@ -113,8 +113,22 @@ function Install-Uv {
     # Install uv
     Write-Info "Installing uv (fast Python package manager)..."
     try {
+        # Relax ErrorActionPreference around the nested astral installer.
+        # The astral installer (a separate `powershell -c "irm ... | iex"`)
+        # writes download progress to stderr.  With $ErrorActionPreference
+        # = "Stop" set at the top of this script, PowerShell wraps stderr
+        # lines from native commands (which `powershell -c` is, from our
+        # perspective) as ErrorRecord objects when captured via 2>&1, then
+        # throws a terminating exception on the first one -- even though
+        # uv installs successfully and the child exits 0.  Same fix
+        # pattern Test-Python uses for `uv python install`; verify success
+        # via Test-Path on the expected binary afterwards, which is more
+        # reliable than exit-code/stderr signal anyway.
+        $prevEAP = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
         powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex" 2>&1 | Out-Null
-        
+        $ErrorActionPreference = $prevEAP
+
         # Find the installed binary
         $uvExe = "$env:USERPROFILE\.local\bin\uv.exe"
         if (-not (Test-Path $uvExe)) {
@@ -139,7 +153,9 @@ function Install-Uv {
         Write-Info "Try restarting your terminal and re-running"
         return $false
     } catch {
-        Write-Err "Failed to install uv"
+        # Restore EAP in case the try block threw before the assignment
+        if ($prevEAP) { $ErrorActionPreference = $prevEAP }
+        Write-Err "Failed to install uv: $_"
         Write-Info "Install manually: https://docs.astral.sh/uv/getting-started/installation/"
         return $false
     }

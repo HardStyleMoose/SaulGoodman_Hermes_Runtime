@@ -145,6 +145,58 @@ function Install-Uv {
     }
 }
 
+# Re-discover uv without re-installing it.  Cross-process stage drivers
+# (the desktop GUI's onboarding wizard, CI step-runners) invoke each stage
+# in a fresh powershell process, so $script:UvCmd set by Install-Uv in a
+# prior process is not visible here.  Later stages (Test-Python,
+# Install-Venv, Install-Dependencies, Install-PlatformSdks) call this
+# at the top to populate $script:UvCmd from PATH or known install paths.
+# Throws if uv is not findable -- the caller's stage then surfaces a
+# clean error via the stage-driver's try/catch.  Fast path is a single
+# Get-Command call when uv is on PATH (the common case after Stage-Uv
+# ran path-modifying installs in a sibling process).
+function Resolve-UvCmd {
+    # Already resolved (default invocation path: Install-Uv ran earlier
+    # in the same process and set $script:UvCmd).
+    if ($script:UvCmd) {
+        if ($script:UvCmd -eq "uv") {
+            # "uv" on PATH -- verify it's still resolvable (PATH could have
+            # changed mid-session; cheap to recheck).
+            if (Get-Command uv -ErrorAction SilentlyContinue) { return }
+        } elseif (Test-Path $script:UvCmd) {
+            return
+        }
+        # Stale; fall through to re-discover.
+    }
+
+    # Try PATH first (covers `winget install astral.uv`, manual installs,
+    # and the post-Install-Uv state where uv.exe lives in
+    # %USERPROFILE%\.local\bin which the installer added to PATH).
+    if (Get-Command uv -ErrorAction SilentlyContinue) {
+        $script:UvCmd = "uv"
+        return
+    }
+
+    # Refresh PATH from registry in case the current process started before
+    # Install-Uv updated User PATH.
+    $env:Path = [Environment]::GetEnvironmentVariable("Path", "User") + ";" + [Environment]::GetEnvironmentVariable("Path", "Machine")
+    if (Get-Command uv -ErrorAction SilentlyContinue) {
+        $script:UvCmd = "uv"
+        return
+    }
+
+    # Check the well-known install locations the astral.sh installer drops
+    # uv into.  Mirrors the probe order Install-Uv uses.
+    foreach ($uvPath in @("$env:USERPROFILE\.local\bin\uv.exe", "$env:USERPROFILE\.cargo\bin\uv.exe")) {
+        if (Test-Path $uvPath) {
+            $script:UvCmd = $uvPath
+            return
+        }
+    }
+
+    throw "uv is not installed or not on PATH. Run install.ps1 -Stage uv first."
+}
+
 function Test-Python {
     Write-Info "Checking Python $PythonVersion..."
     
@@ -1684,18 +1736,25 @@ $InstallStages = @(
 # Test-* / Invoke-* functions while preserving their error semantics.  Kept
 # as a separate layer so the existing functions remain callable directly
 # (helpful for one-off recovery: ``. install.ps1; Install-Venv``).
+#
+# Stages that depend on uv (anything after Stage-Uv) call Resolve-UvCmd
+# first so they work in cross-process driver mode where $script:UvCmd
+# set by Stage-Uv in a sibling powershell process is not visible here.
+# Resolve-UvCmd is a fast no-op when $script:UvCmd is already populated
+# (the default-invocation case where Main runs everything in one
+# process), and throws cleanly if uv truly isn't installed yet.
 function Stage-Uv               { if (-not (Install-Uv))     { throw "uv installation failed" } }
-function Stage-Python           { if (-not (Test-Python))    { throw "Python $PythonVersion not available" } }
+function Stage-Python           { Resolve-UvCmd; if (-not (Test-Python))    { throw "Python $PythonVersion not available" } }
 function Stage-Git              { if (-not (Install-Git))    { throw "Git not available and auto-install failed -- install from https://git-scm.com/download/win then re-run" } }
 function Stage-Node             { [void](Test-Node) }
 function Stage-SystemPackages   { Install-SystemPackages }
 function Stage-Repository       { Install-Repository }
-function Stage-Venv             { Install-Venv }
-function Stage-Dependencies     { Install-Dependencies }
+function Stage-Venv             { Resolve-UvCmd; Install-Venv }
+function Stage-Dependencies     { Resolve-UvCmd; Install-Dependencies }
 function Stage-NodeDeps         { Install-NodeDeps }
 function Stage-Path             { Set-PathVariable }
 function Stage-ConfigTemplates  { Copy-ConfigTemplates }
-function Stage-PlatformSdks     { Install-PlatformSdks }
+function Stage-PlatformSdks     { Resolve-UvCmd; Install-PlatformSdks }
 function Stage-Configure        { Invoke-SetupWizard }
 function Stage-Gateway          { Start-GatewayIfConfigured }
 

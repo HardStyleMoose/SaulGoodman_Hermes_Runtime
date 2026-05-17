@@ -565,24 +565,16 @@ function Test-Node {
 
     Write-Info "Node.js not found -- installing Node.js $NodeVersion LTS..."
 
-    # Try winget first (cleanest on modern Windows)
-    if (Get-Command winget -ErrorAction SilentlyContinue) {
-        Write-Info "Installing via winget..."
-        try {
-            winget install OpenJS.NodeJS.LTS --silent --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
-            # Refresh PATH
-            $env:Path = [Environment]::GetEnvironmentVariable("Path", "User") + ";" + [Environment]::GetEnvironmentVariable("Path", "Machine")
-            if (Get-Command node -ErrorAction SilentlyContinue) {
-                $version = node --version
-                Write-Success "Node.js $version installed via winget"
-                $script:HasNode = $true
-                return $true
-            }
-        } catch { }
-    }
-
-    # Fallback: download binary zip to ~/.hermes/node/
-    Write-Info "Downloading Node.js $NodeVersion binary..."
+    # Try the portable-zip path FIRST -- no UAC, no admin, no winget MSI.
+    # winget install OpenJS.NodeJS.LTS triggers a system-wide MSI install
+    # which prompts UAC (the dialog often appears minimized in the taskbar
+    # and the install silently waits for consent, looking like a hang).
+    # The portable zip path drops node.exe + npm into $HermesHome\node\
+    # which is user-scoped and identical to how Install-Git handles
+    # PortableGit.  Same UX guarantee: works on locked-down enterprise
+    # machines with no admin rights.
+    Write-Info "Downloading portable Node.js $NodeVersion to $HermesHome\node\ ..."
+    Write-Info "(no admin rights required; isolated from any system Node install)"
     try {
         $arch = if ([Environment]::Is64BitOperatingSystem) { "x64" } else { "x86" }
         $indexUrl = "https://nodejs.org/dist/latest-v${NodeVersion}.x/"
@@ -602,10 +594,23 @@ function Test-Node {
             if ($extractedDir) {
                 if (Test-Path "$HermesHome\node") { Remove-Item -Recurse -Force "$HermesHome\node" }
                 Move-Item $extractedDir.FullName "$HermesHome\node"
+
+                # Session PATH so the rest of this run sees node/npm.
                 $env:Path = "$HermesHome\node;$env:Path"
 
+                # Persist to User PATH so fresh shells (and future stages
+                # in cross-process driver mode) see it.  Matches the
+                # pattern Install-Git uses for PortableGit.
+                $nodeDir = "$HermesHome\node"
+                $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+                $userPathItems = if ($userPath) { $userPath -split ";" } else { @() }
+                if ($userPathItems -notcontains $nodeDir) {
+                    $userPathItems += $nodeDir
+                    [Environment]::SetEnvironmentVariable("Path", ($userPathItems -join ";"), "User")
+                }
+
                 $version = & "$HermesHome\node\node.exe" --version
-                Write-Success "Node.js $version installed to ~/.hermes/node/"
+                Write-Success "Node.js $version installed to $HermesHome\node\ (portable, user-scoped)"
                 $script:HasNode = $true
 
                 Remove-Item -Force $tmpZip -ErrorAction SilentlyContinue
@@ -614,10 +619,30 @@ function Test-Node {
             }
         }
     } catch {
-        Write-Warn "Download failed: $_"
+        Write-Warn "Portable Node.js download failed: $_"
     }
 
-    Write-Warn "Could not auto-install Node.js"
+    # Fallback: try winget (used to be primary, demoted because the MSI
+    # install triggers a UAC prompt that frequently appears minimized in
+    # the taskbar -- looks like a hang to users on stock Windows).
+    # Kept for environments where the portable download fails (proxy,
+    # locked firewall, etc.) but the user is willing to consent to UAC.
+    if (Get-Command winget -ErrorAction SilentlyContinue) {
+        Write-Info "Falling back to winget (may prompt UAC -- check your taskbar for a flashing icon)..."
+        try {
+            winget install OpenJS.NodeJS.LTS --silent --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
+            # Refresh PATH
+            $env:Path = [Environment]::GetEnvironmentVariable("Path", "User") + ";" + [Environment]::GetEnvironmentVariable("Path", "Machine")
+            if (Get-Command node -ErrorAction SilentlyContinue) {
+                $version = node --version
+                Write-Success "Node.js $version installed via winget"
+                $script:HasNode = $true
+                return $true
+            }
+        } catch { }
+    }
+
+
     Write-Info "Install manually: https://nodejs.org/en/download/"
     $script:HasNode = $false
     return $true

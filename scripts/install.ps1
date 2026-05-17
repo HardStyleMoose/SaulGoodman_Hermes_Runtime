@@ -630,7 +630,14 @@ function Test-Node {
     if (Get-Command winget -ErrorAction SilentlyContinue) {
         Write-Info "Falling back to winget (may prompt UAC -- check your taskbar for a flashing icon)..."
         try {
+            # Relax EAP=Stop so stderr lines from winget don't get wrapped
+            # as ErrorRecords and short-circuit the 2>&1 pipe before we can
+            # check the post-condition.  See the long comment in Install-Uv
+            # for the same pattern.
+            $prevEAP = $ErrorActionPreference
+            $ErrorActionPreference = "Continue"
             winget install OpenJS.NodeJS.LTS --silent --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
+            $ErrorActionPreference = $prevEAP
             # Refresh PATH
             $env:Path = [Environment]::GetEnvironmentVariable("Path", "User") + ";" + [Environment]::GetEnvironmentVariable("Path", "Machine")
             if (Get-Command node -ErrorAction SilentlyContinue) {
@@ -639,7 +646,9 @@ function Test-Node {
                 $script:HasNode = $true
                 return $true
             }
-        } catch { }
+        } catch {
+            if ($prevEAP) { $ErrorActionPreference = $prevEAP }
+        }
     }
 
 
@@ -1090,8 +1099,18 @@ except Exception:
         if (-not (Test-Path $venvPython)) {
             throw "Install reported success but $venvPython does not exist. The dependency sync likely landed in a sibling .venv\ directory. Re-run the installer; if it persists, manually: cd '$InstallDir'; Remove-Item -Recurse -Force venv,.venv; uv venv venv --python $PythonVersion; `$env:UV_PROJECT_ENVIRONMENT='$InstallDir\venv'; uv sync --extra all --locked"
         }
+        # Relax EAP=Stop while running the import probe.  Python writes
+        # deprecation warnings and import-system info to stderr; under
+        # EAP=Stop the 2>&1 merge wraps those as ErrorRecord objects and
+        # throws even when the imports succeed.  $LASTEXITCODE is the
+        # reliable signal (it's 0 iff the python invocation exited 0,
+        # regardless of what was written to stderr).
+        $prevEAP = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
         & $venvPython -c "import dotenv, openai, rich, prompt_toolkit" 2>&1 | Out-Null
-        if ($LASTEXITCODE -ne 0) {
+        $importExitCode = $LASTEXITCODE
+        $ErrorActionPreference = $prevEAP
+        if ($importExitCode -ne 0) {
             $sibling = "$InstallDir\.venv"
             $hint = if (Test-Path $sibling) {
                 "Detected sibling .venv\ at $sibling -- uv synced there instead of venv\. Recover with: cd '$InstallDir'; Remove-Item -Recurse -Force venv; Move-Item .venv venv"
@@ -1110,10 +1129,18 @@ except Exception:
     $pythonExe = if (-not $NoVenv) { "$InstallDir\venv\Scripts\python.exe" } else { (& $UvCmd python find $PythonVersion) }
     if (Test-Path $pythonExe) {
         $webOk = $false
+        # Relax EAP=Stop while running the import probe; see the matching
+        # comment on the baseline-imports check above.  Python writes
+        # deprecation warnings to stderr and we don't want those wrapped
+        # as ErrorRecords that silently force the "not importable" path
+        # even when fastapi/uvicorn are actually installed.
+        $prevEAP = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
         try {
             & $pythonExe -c "import fastapi, uvicorn" 2>&1 | Out-Null
             if ($LASTEXITCODE -eq 0) { $webOk = $true }
         } catch { }
+        $ErrorActionPreference = $prevEAP
         if (-not $webOk) {
             Write-Warn "fastapi/uvicorn not importable -- `hermes dashboard` will not work."
             Write-Info "Attempting targeted install of [web] extra as last resort..."

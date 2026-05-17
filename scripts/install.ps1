@@ -1326,8 +1326,19 @@ function Install-NodeDeps {
             # on failure.  Note: 2>&1 merges npm's stderr into the success
             # stream first because Tee-Object only sees the success
             # stream of the pipeline.
+            #
+            # Relax EAP around the npm invocation: with EAP=Stop (set at
+            # the top of this script), PowerShell wraps stderr lines from
+            # native commands captured via 2>&1 as ErrorRecord objects and
+            # throws on the first one -- even though npm exited 0.  This
+            # is the same issue Test-Python and Install-Uv work around
+            # for uv's stderr-emitting installer.  Check success via
+            # $LASTEXITCODE, which is reliable regardless of stderr noise.
+            $prevEAP = $ErrorActionPreference
+            $ErrorActionPreference = "Continue"
             & $npmPath install --silent 2>&1 | Tee-Object -FilePath $logPath
             $code = $LASTEXITCODE
+            $ErrorActionPreference = $prevEAP
             if ($code -eq 0) {
                 Write-Success "$label dependencies installed"
                 Remove-Item -Force $logPath -ErrorAction SilentlyContinue
@@ -1348,6 +1359,7 @@ function Install-NodeDeps {
             Write-Info "Run manually later: cd `"$installDir`"; npm install"
             return $false
         } catch {
+            if ($prevEAP) { $ErrorActionPreference = $prevEAP }
             Write-Warn "$label npm install could not be launched: $_"
             return $false
         } finally {
@@ -1403,8 +1415,20 @@ function Install-NodeDeps {
                     # from the user's TTY), and the install hangs indefinitely
                     # after printing "Need to install the following packages:
                     # playwright@X.Y.Z".
+                    #
+                    # Relax EAP around the playwright invocation: playwright
+                    # emits a "Chromium downloaded to ..." success banner to
+                    # stderr after a successful install.  Under EAP=Stop, the
+                    # 2>&1 merge wraps those stderr lines as ErrorRecord
+                    # objects and throws -- causing this catch block to fire
+                    # with a mangled banner as the error message even though
+                    # the install actually succeeded.  Check $LASTEXITCODE
+                    # instead, which is the reliable signal.
+                    $prevEAP = $ErrorActionPreference
+                    $ErrorActionPreference = "Continue"
                     & $npxExe --yes playwright install chromium 2>&1 | Tee-Object -FilePath $pwLog
                     $pwCode = $LASTEXITCODE
+                    $ErrorActionPreference = $prevEAP
                     if ($pwCode -eq 0) {
                         Write-Success "Playwright Chromium installed (browser tools ready)"
                         Remove-Item -Force $pwLog -ErrorAction SilentlyContinue
@@ -1425,6 +1449,7 @@ function Install-NodeDeps {
                         Write-Info "Run manually later: cd `"$InstallDir`"; npx playwright install chromium"
                     }
                 } catch {
+                    if ($prevEAP) { $ErrorActionPreference = $prevEAP }
                     Write-Warn "Playwright Chromium install could not be launched: $_"
                     Write-Info "Run manually later: cd `"$InstallDir`"; npx playwright install chromium"
                 } finally {
